@@ -88,6 +88,3 @@ install.packages(c("quantmod", "tidyverse", "moments", "reshape2", "tseries", "k
 rmarkdown::render("stock-prices-gbm.Rmd")
 ```
 
-## Author
-
-**Amba Sharma** — BSc Mathematics (Applied Mathematics emphasis), University of Leicester.
