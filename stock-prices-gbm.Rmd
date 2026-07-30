@@ -1,0 +1,592 @@
+---
+title: "Stock Price Modelling using Geometric Brownian Motion"
+author: "Amba Sharma"
+date: "2025-11-06"
+output: 
+  github_document:
+    fig_width: 10
+    fig_height: 6
+---
+
+## Introduction
+
+This project applies Geometric Brownian Motion (GBM) to model Tesla (TSLA) stock prices. Using historical price data from 2014-2024, the analysis estimates drift and volatility parameters, validates model assumptions through statistical testing, and generates Monte Carlo simulations to forecast future price paths. The project demonstrates key concepts from stochastic calculus and their application to financial modelling.
+
+## Data Collection and Log Returns
+
+```{r}
+library (quantmod)
+library(tidyverse)
+library(moments)
+library(reshape2)
+library(tseries)
+library(knitr)
+```
+
+```{r}
+#import data
+getSymbols("TSLA", from = "2014-01-01", to = "2024-12-31")
+prices <- Cl(TSLA) 
+head (prices)
+
+#log returns 
+log_returns <- diff(log(prices))
+log_returns <- na.omit(log_returns)
+head(log_returns)
+
+summary(log_returns)
+mean_return <- mean(log_returns)
+sd_return <- sd(log_returns)
+
+mean_return
+sd_return
+
+```
+
+### Log Returns Calculation
+
+```{r}
+n <- length(prices)
+price_vec <- as.numeric(prices)
+log_ret <- diff(log(price_vec))
+
+prices_df <- data.frame(
+  Date = index(prices)[2:n],
+  Price = price_vec[2:n],
+  Previous_Price = price_vec[1:(n-1)],
+  Ratio = price_vec[2:n] / price_vec[1:(n-1)],
+  Log_Return = log_ret
+)
+head(prices_df)
+
+display_table <- rbind(head(prices_df, 6), tail(prices_df, 2))
+
+kable(display_table,
+      digits = 5,
+      col.names = c("Date", "Price ($)", "Prev Price ($)", "Ratio", "Log Return"),
+      caption = "Table 1: Sample Daily Log Returns Calculation (First 6 and Last 2 observations)")
+```
+
+### Summary Statistics
+
+```{r}
+# statistics
+mean_return <- mean(log_returns)
+median_return <- median(log_returns)
+sd_return <- sd(log_returns)
+min_return <- min(log_returns)
+max_return <- max(log_returns)
+skew_return <- skewness(log_returns)
+kurt_return <- kurtosis(log_returns)
+q1_return <- quantile(log_returns, 0.25)
+q3_return <- quantile(log_returns, 0.75)
+n_return <- length(log_returns)
+
+# summary table
+stats_summary <- data.frame(
+  Statistic = c("Mean", "Median", "Std Dev", "Minimum", "Maximum",
+                "Skewness", "Kurtosis", "Q1 (25%)", "Q3 (75%)", "Count"),
+  Value = c(
+    mean_return,
+    median_return,
+    sd_return,
+    min_return,
+    max_return,
+    skew_return,
+    kurt_return,
+    q1_return,
+    q3_return,
+    n_return
+  )
+)
+
+print( stats_summary)
+```
+
+### Price and Returns Visualisation
+
+```{r}
+
+plot(prices, main = "Tesla Stock Prices", ylab = "Price ($)")
+
+```
+
+
+```{r}
+
+{plot(log_returns, main = "Daily Log Returns", ylab = "Log Return")}
+```
+
+```{r}
+
+hist(log_returns, breaks = 50, main = "Distribution of Log Returns",
+     xlab = "Log Return", probability = TRUE)
+# Add normal curve overlay
+curve(dnorm(x, mean = mean(log_returns), sd = sd(log_returns)), 
+      add = TRUE, col = "red", lwd = 2)
+
+```
+
+## GBM Parameter Estimation
+
+The GBM model assumes stock prices follow the stochastic differential equation:
+
+dS = μS dt + σS dW
+
+where μ is the drift (expected return), σ is the volatility, and dW is a Wiener process. Parameters are estimated using both Method of Moments and Maximum Likelihood Estimation.
+
+### Method of Moments
+
+```{r}
+
+log_returns <- na.omit(diff(log(Cl(TSLA))))
+
+# Calculate sample statistics
+mean_return <- mean(log_returns)
+sd_return <- sd(log_returns)
+n <- length(log_returns)
+
+# Trading days per year
+trading_days <- 252
+dt <- 1/trading_days
+
+# Estimate volatility (sigma) - annualized
+sigma_hat <- sd_return * sqrt(trading_days)
+
+# Estimate drift (mu) - annualized
+mu_hat <- mean_return * trading_days + 0.5 * sigma_hat^2 
+
+# Display results
+cat("Parameter Estimates:\n")
+cat("=====================================\n")
+cat("Sample size (n):", n, "days\n")
+cat("Time period:", format(start(log_returns), "%Y-%m-%d"), 
+    "to", format(end(log_returns), "%Y-%m-%d"), "\n\n")
+
+cat("Daily Statistics:\n")
+cat("Mean daily log return:", mean_return, "\n")
+cat("Std dev of daily log returns:", sd_return, "\n\n")
+
+cat("Annualized GBM Parameters:\n")
+cat("Drift (μ):", mu_hat, "\n")
+cat("Volatility (σ):", sigma_hat, "\n\n")
+
+cat("Interpretation:\n")
+cat("Expected annual return:", round(mu_hat * 100, 2), "%\n")
+cat("Annual volatility:", round(sigma_hat * 100, 2), "%\n")
+```
+
+### Maximum likelihood estimation
+
+```{r}
+
+# (gives same result for GBM but shows statistical rigor)
+
+# Log-likelihood function for GBM
+log_likelihood <- function(params, returns) {
+  mu <- params[1]
+  sigma <- params[2]
+  n <- length(returns)
+  dt <- 1/252
+  
+  # Theoretical mean and variance of log returns under GBM
+  expected_return <- (mu - 0.5 * sigma^2) * dt
+  variance <- sigma^2 * dt
+  
+  # Log-likelihood
+  ll <- sum(dnorm(returns, mean = expected_return, 
+                  sd = sqrt(variance), log = TRUE))
+  return(-ll)  # Negative for minimization
+}
+
+# Optimize
+initial_guess <- c(mu_hat, sigma_hat)
+mle_result <- optim(initial_guess, log_likelihood, 
+                    returns = log_returns,
+                    method = "L-BFGS-B",
+                    lower = c(-1, 0.01),
+                    upper = c(1, 2))
+
+mu_mle <- mle_result$par[1]
+sigma_mle <- mle_result$par[2]
+
+cat("MLE Estimates:\n")
+cat("Drift (μ):", mu_mle, "\n")
+cat("Volatility (σ):", sigma_mle, "\n")
+```
+
+### Confidence Intervals
+
+```{r}
+# Standard errors for parameter estimates
+se_sigma <- sigma_hat / sqrt(2 * (n - 1))
+se_mu <- sqrt(sigma_hat^2 / n)
+
+# 95% Confidence Intervals
+alpha <- 0.05
+z_critical <- qnorm(1 - alpha/2)
+
+ci_sigma <- c(sigma_hat - z_critical * se_sigma,
+              sigma_hat + z_critical * se_sigma)
+
+ci_mu <- c(mu_hat - z_critical * se_mu,
+           mu_hat + z_critical * se_mu)
+
+cat("\n95% Confidence Intervals:\n")
+cat("μ: [", ci_mu[1], ",", ci_mu[2], "]\n")
+cat("σ: [", ci_sigma[1], ",", ci_sigma[2], "]\n")
+```
+
+#### Validation of GBM assumptions
+
+## Model Validation
+
+GBM assumes log returns are normally distributed and independent. We test these assumptions using multiple statistical approaches.
+
+### Normality Testing
+
+
+### Q-Q Plot
+
+```{r}
+
+qqnorm(log_returns, main = "Q-Q Plot of Log Returns")
+qqline(log_returns, col = "red", lwd = 2)
+```
+
+### Shapiro- Wilk test
+
+```{r}
+
+
+returns_numeric <- as.numeric(log_returns)
+
+n_returns <- length(returns_numeric)
+cat("Sample size:", n_returns, "observations\n")
+
+# Shapiro-Wilk works best with n <= 5000
+if (n_returns > 5000) {
+  #random sample of 5000
+  set.seed(123)  # For reproducibility
+  sample_returns <- sample(returns_numeric, 5000)
+  shapiro_test <- shapiro.test(sample_returns)
+  cat("Note: Testing on random sample of 5000 observations\n")
+} else {
+  # Use all observations
+  shapiro_test <- shapiro.test(returns_numeric)
+}
+
+cat("\nShapiro-Wilk Normality Test:\n")
+cat("W statistic:", sprintf("%.6f", shapiro_test$statistic), "\n")
+cat("p-value:", sprintf("%.6f", shapiro_test$p.value), "\n")
+
+if (shapiro_test$p.value < 0.05) {
+  cat("Result: REJECT normality at 5% significance level\n")
+  cat("        (Returns do NOT follow normal distribution)\n\n")
+} else {
+  cat("Result: FAIL TO REJECT normality at 5% significance level\n")
+  cat("        (Returns appear approximately normal)\n\n")
+}
+```
+
+### Jarque-Beta test
+
+```{r}
+jb_test <- jarque.bera.test(log_returns)
+cat("\nJarque-Bera Test:\n")
+cat("X-squared:", jb_test$statistic, "\n")
+cat("p-value:", jb_test$p.value, "\n")
+```
+
+### Kolmogorov-Smirnov test
+
+```{r}
+ks_test <- ks.test(log_returns, "pnorm", 
+                   mean = mean_return, sd = sd_return)
+cat("\nKolmogorov-Smirnov Test:\n")
+cat("D statistic:", ks_test$statistic, "\n")
+cat("p-value:", ks_test$p.value, "\n")
+
+```
+
+### Distribution Characteristics
+
+```{r}
+
+cat("# 5. Distribution Characteristics\n")
+library(moments)
+
+skew_val <- skewness(log_ret)
+kurt_val <- kurtosis(log_ret)
+excess_kurt <- kurt_val - 3
+
+cat("\nSkewness:", sprintf("%.4f", skew_val))
+if (abs(skew_val) < 0.5) {
+  cat(" (approximately symmetric)\n")
+} else if (skew_val < 0) {
+  cat(" (negatively skewed - left tail)\n")
+} else {
+  cat(" (positively skewed - right tail)\n")
+}
+
+cat("Kurtosis:", sprintf("%.4f", kurt_val), "\n")
+cat("Excess Kurtosis:", sprintf("%.4f", excess_kurt))
+if (abs(excess_kurt) < 0.5) {
+  cat(" (approximately normal)\n")
+} else if (excess_kurt > 0) {
+  cat(" (leptokurtic - fat tails)\n")
+} else {
+  cat(" (platykurtic - thin tails)\n")
+}
+```
+
+### Diagnostic Plots
+
+```{r}
+
+# 1. Histogram with fitted normal distribution
+hist(log_returns, breaks = 50, probability = TRUE,
+     main = "Log Returns vs Normal Distribution",
+     xlab = "Log Return", col = "lightblue")
+curve(dnorm(x, mean = mean_return, sd = sd_return),
+      add = TRUE, col = "red", lwd = 2)
+legend("topright", legend = c("Observed", "Normal Fit"),
+       col = c("lightblue", "red"), lwd = 2)
+
+# 2. Q-Q Plot
+qqnorm(log_returns, main = "Normal Q-Q Plot")
+qqline(log_returns, col = "red", lwd = 2)
+
+# 3. ACF plot (check for independence)
+acf(log_returns, main = "Autocorrelation Function")
+
+# 4. Time series with volatility bands
+plot(log_returns, main = "Log Returns with ±2σ Bands",
+     ylab = "Log Return")
+abline(h = mean_return + 2*sd_return, col = "red", lty = 2)
+abline(h = mean_return - 2*sd_return, col = "red", lty = 2)
+abline(h = mean_return, col = "blue", lwd = 2)
+```
+
+### Parameter Summary
+
+```{r}
+summary_table <- data.frame(
+  Parameter = c("Drift (μ)", "Volatility (σ)", 
+                "Mean daily return", "Daily std dev",
+                "Sample size", "Time period"),
+  Estimate = c(
+    sprintf("%.4f (%.2f%%)", mu_hat, mu_hat*100),
+    sprintf("%.4f (%.2f%%)", sigma_hat, sigma_hat*100),
+    sprintf("%.6f", mean_return),
+    sprintf("%.6f", sd_return),
+    sprintf("%d days", n),
+    sprintf("%s to %s", format(start(log_returns), "%Y-%m-%d"),
+                        format(end(log_returns), "%Y-%m-%d"))
+  )
+)
+
+print(summary_table)
+kable(summary_table, caption = "GBM Parameter Estimates for TSLA")
+```
+
+## Monte Carlo Simulation
+
+Using the estimated GBM parameters, Monte Carlo simulation generates multiple possible price paths. This allows comparison between simulated and actual historical prices, as well as forecasting future prices with confidence intervals.
+
+### Simulation Setup
+
+```{r}
+# Parameters from Q4
+mu_hat <- 0.4980
+sigma_hat <- 0.5623
+
+# In-sample setup
+S0_historical <- as.numeric(prices[1])  # Initial price
+T_historical <- length(prices) / 252    # Time in years
+n_sims_insample <- 1000
+
+# Out-of-sample setup
+S0_forecast <- as.numeric(tail(prices, 1))  # Last actual price
+T_forecast <- 2  # 2 years ahead
+n_sims_forecast <- 5000
+
+```
+
+### GBM simulation function
+
+```{r}
+set.seed(123)
+
+simulate_gbm <- function(S0, mu, sigma, T, n_steps, n_sims) {
+  dt <- T / n_steps
+  price_matrix <- matrix(0, nrow = n_steps + 1, ncol = n_sims)
+  price_matrix[1, ] <- S0
+  
+  for (i in 1:n_sims) {
+    for (t in 2:(n_steps + 1)) {
+      Z <- rnorm(1)
+      price_matrix[t, i] <- price_matrix[t-1, i] * exp((mu - 0.5 * sigma^2) * dt + sigma * sqrt(dt) * Z)
+    }
+  }
+  return(price_matrix)
+}
+```
+
+### In sample simulation
+
+```{r}
+n_steps_historical <- length(prices) - 1
+T_historical <- n_steps_historical / 252
+
+sim_prices <- simulate_gbm(
+  S0 = as.numeric(prices[1]),
+  mu = mu_hat,
+  sigma = sigma_hat,
+  T = T_historical,
+  n_steps = n_steps_historical,
+  n_sims = 100
+)
+
+dim(sim_prices)
+```
+
+### Simulated Paths vs Actual Prices
+```{r}
+plot(index(prices), as.numeric(prices), type = "l", lwd = 2, col = "black",
+     main = "GBM Simulations vs Actual Tesla Prices",
+     xlab = "Date",
+     ylab = "Price ($)",
+     ylim = c(0, max(as.numeric(prices)) * 1.5))
+
+for (i in 1:20) {
+  lines(index(prices), sim_prices[, i], col = rgb(0, 0, 1, 0.3))
+}
+
+lines(index(prices), as.numeric(prices), lwd = 2, col = "black")
+legend("topleft", legend = c("Actual", "Simulated"), col = c("black", "blue"), lwd = 2)
+```
+
+### Simulation Accuracy
+```{r}
+sim_mean <- rowMeans(sim_prices)
+sim_median <- apply(sim_prices, 1, median)
+sim_lower <- apply(sim_prices, 1, quantile, probs = 0.05)
+sim_upper <- apply(sim_prices, 1, quantile, probs = 0.95)
+
+final_actual <- as.numeric(tail(prices, 1))
+final_sim_mean <- tail(sim_mean, 1)
+final_sim_median <- tail(sim_median, 1)
+
+cat("Final Actual Price:", round(final_actual, 2), "\n")
+cat("Final Simulated Mean:", round(final_sim_mean, 2), "\n")
+cat("Final Simulated Median:", round(final_sim_median, 2), "\n")
+```
+
+### Confidence bands
+
+```{r}
+plot(index(prices), as.numeric(prices), type = "l", lwd = 2, col = "black",
+     main = "GBM Simulation with 90% Confidence Band",
+     xlab = "Date",
+     ylab = "Price ($)",
+     ylim = c(0, max(as.numeric(prices)) * 1.5))
+
+polygon(c(index(prices), rev(index(prices))),
+        c(sim_lower, rev(sim_upper)),
+        col = rgb(0, 0, 1, 0.2), border = NA)
+
+lines(index(prices), sim_mean, col = "blue", lwd = 2)
+lines(index(prices), as.numeric(prices), col = "black", lwd = 2)
+
+legend("topleft", 
+       legend = c("Actual", "Simulated Mean", "90% CI"),
+       col = c("black", "blue", rgb(0, 0, 1, 0.2)),
+       lwd = c(2, 2, 10))
+```
+
+### Error metrics
+
+```{r}
+actual_prices <- as.numeric(prices)
+mae <- mean(abs(actual_prices - sim_mean))
+rmse <- sqrt(mean((actual_prices - sim_mean)^2))
+mape <- mean(abs((actual_prices - sim_mean) / actual_prices)) * 100
+
+cat("Mean Absolute Error (MAE): $", round(mae, 2), "\n")
+cat("Root Mean Square Error (RMSE): $", round(rmse, 2), "\n")
+cat("Mean Absolute Percentage Error (MAPE):", round(mape, 2), "%\n")
+```
+
+The error metrics quantify how well the GBM simulations capture the actual price trajectory. While individual simulated paths diverge significantly from actual prices (as expected from a stochastic model), the mean simulated path provides a reasonable central estimate. The MAPE indicates the average percentage deviation between simulated and actual prices.
+
+### Out of sample forecast
+
+```{r}
+S0_forecast <- as.numeric(tail(prices, 1))
+T_forecast <- 1
+n_steps_forecast <- 252
+
+future_sims <- simulate_gbm(
+  S0 = S0_forecast,
+  mu = mu_hat,
+  sigma = sigma_hat,
+  T = T_forecast,
+  n_steps = n_steps_forecast,
+  n_sims = 100
+)
+
+future_dates <- seq(from = as.Date("2025-01-01"), by = "day", length.out = n_steps_forecast + 1)
+future_dates <- future_dates[!weekdays(future_dates) %in% c("Saturday", "Sunday")][1:(n_steps_forecast + 1)]
+```
+
+
+```{r}
+future_mean <- rowMeans(future_sims)
+future_lower <- apply(future_sims, 1, quantile, probs = 0.05)
+future_upper <- apply(future_sims, 1, quantile, probs = 0.95)
+
+plot(future_dates, future_mean, type = "l", lwd = 2, col = "blue",
+     main = "GBM Forecast: Tesla Prices (1 Year Ahead)",
+     xlab = "Date",
+     ylab = "Price ($)",
+     ylim = c(0, max(future_upper) * 1.1))
+
+polygon(c(future_dates, rev(future_dates)),
+        c(future_lower, rev(future_upper)),
+        col = rgb(0, 0, 1, 0.2), border = NA)
+
+lines(future_dates, future_mean, col = "blue", lwd = 2)
+abline(h = S0_forecast, col = "red", lty = 2)
+
+legend("topleft",
+       legend = c("Forecast Mean", "90% CI", "Starting Price"),
+       col = c("blue", rgb(0, 0, 1, 0.2), "red"),
+       lwd = c(2, 10, 2),
+       lty = c(1, 1, 2))
+```
+
+### Forecast Summary
+
+```{r}
+forecast_final_mean <- tail(future_mean, 1)
+forecast_final_median <- median(future_sims[nrow(future_sims), ])
+forecast_final_lower <- tail(future_lower, 1)
+forecast_final_upper <- tail(future_upper, 1)
+
+cat("Starting Price: $", round(S0_forecast, 2), "\n")
+cat("Forecast Mean (1 Year): $", round(forecast_final_mean, 2), "\n")
+cat("Forecast Median (1 Year): $", round(forecast_final_median, 2), "\n")
+cat("90% CI Lower: $", round(forecast_final_lower, 2), "\n")
+cat("90% CI Upper: $", round(forecast_final_upper, 2), "\n")
+cat("Expected Return:", round((forecast_final_mean / S0_forecast - 1) * 100, 2), "%\n")
+```
+## Conclusion
+
+This analysis applied Geometric Brownian Motion to model Tesla stock prices from 2014-2024. The estimated parameters suggest an annualised drift (μ) of approximately 49.8% and volatility (σ) of 56.2%, reflecting Tesla's high-growth, high-volatility characteristics.
+
+**Model Validation:** Statistical tests (Shapiro-Wilk, Jarque-Bera, Kolmogorov-Smirnov) rejected the normality assumption for log returns at the 5% significance level. The Q-Q plot and kurtosis analysis revealed fat tails (leptokurtosis), indicating that extreme price movements occur more frequently than a normal distribution would predict. This is a well-documented limitation of GBM for modelling real financial data.
+
+**Simulation Results:** Monte Carlo simulation generated price paths that broadly captured the range of Tesla's historical price movements. The 90% confidence bands contained the actual price trajectory for most of the sample period, though the model struggled to capture the extreme rally in 2020-2021.
+
+**Limitations:** GBM assumes constant volatility and normally distributed returns — both assumptions violated in practice. Real stock prices exhibit volatility clustering, fat tails, and occasional jumps that GBM cannot capture. Extensions such as stochastic volatility models (Heston) or jump-diffusion models (Merton) address some of these limitations.
